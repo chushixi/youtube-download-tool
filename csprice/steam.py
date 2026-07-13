@@ -48,13 +48,16 @@ def _parse_price(text):
 
 class SteamClient:
     def __init__(self, currency=CURRENCY_CNY, country="CN", language="schinese",
-                 delay=3.0, timeout=20, max_retries=4, session=None):
+                 delay=3.0, timeout=20, max_retries=4, session=None,
+                 cookie=None, mode="full", cooldown=300):
         self.currency = currency
         self.country = country
         self.language = language
         self.delay = delay          # 每次請求後最少間隔秒數（避免 429）
         self.timeout = timeout
         self.max_retries = max_retries
+        self.mode = mode            # "full"=含最高求購, "lite"=只 priceoverview
+        self.cooldown = cooldown    # 持續 429 時的長冷卻秒數
         self.s = session or requests.Session()
         self.s.headers.update({
             "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -62,12 +65,16 @@ class SteamClient:
                            "Chrome/122.0 Safari/537.36"),
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         })
+        if cookie:
+            # 登入後的 Steam session（steamLoginSecure=...）限流門檻高很多
+            self.s.headers["Cookie"] = cookie
         self._nameid_cache = {}
 
     # -- 低階：帶退避的 GET --------------------------------------------------
-    def _get(self, url, params=None, referer=None):
+    def _get(self, url, params=None, referer=None, allow_cooldown=True):
         headers = {"Referer": referer} if referer else None
         backoff = self.delay
+        last_was_429 = False
         for attempt in range(1, self.max_retries + 1):
             try:
                 r = self.s.get(url, params=params, headers=headers,
@@ -77,14 +84,22 @@ class SteamClient:
                             self.max_retries, e)
                 time.sleep(backoff)
                 backoff *= 2
+                last_was_429 = False
                 continue
             if r.status_code == 429:
                 log.warning("Steam 429 限流，退避 %.1fs (%s/%s)", backoff * 2,
                             attempt, self.max_retries)
                 time.sleep(backoff * 2)
                 backoff *= 2
+                last_was_429 = True
                 continue
             return r
+        # 短退避都用完仍被限流 → 長冷卻再重試一輪（Steam 通常需數分鐘解封）
+        if last_was_429 and allow_cooldown and self.cooldown > 0:
+            log.warning("Steam 持續限流，冷卻 %ss 後再試…（可 Ctrl+C 中止，"
+                        "已抓部分會存檔）", self.cooldown)
+            time.sleep(self.cooldown)
+            return self._get(url, params, referer, allow_cooldown=False)
         return None
 
     # -- item_nameid：商品頁解析 + 快取 --------------------------------------
@@ -166,7 +181,8 @@ class SteamClient:
     def fetch(self, market_hash_name):
         """回傳 dict：lowest_sell / highest_buy / volume（缺值為 None）。"""
         overview = self.price_overview(market_hash_name)
-        hist = self.order_histogram(market_hash_name)
+        # lite 模式只打 priceoverview（1 次/款）降低限流；代價是無最高求購。
+        hist = {} if self.mode == "lite" else self.order_histogram(market_hash_name)
         # 最低賣價優先採 histogram（即時掛單），退回 priceoverview。
         lowest_sell = hist.get("lowest_sell_order")
         if lowest_sell is None:

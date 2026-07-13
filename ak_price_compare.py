@@ -44,7 +44,14 @@ def parse_args(argv=None):
     p.add_argument("--currency", type=int, default=23,
                    help="Steam 貨幣代碼（1=USD, 3=EUR, 23=CNY）預設 23")
     p.add_argument("--steam-delay", type=float, default=3.0,
-                   help="Steam 每請求間隔秒數，太小會被 429 限流")
+                   help="Steam 每請求間隔秒數，被限流就調大（如 8~15）")
+    p.add_argument("--steam-mode", choices=["full", "lite"], default="full",
+                   help="full=含 Steam 最高求購(3請求/款,易被限流); "
+                        "lite=只抓最低賣價+交易量(1請求/款,較穩)")
+    p.add_argument("--steam-cookie", default=os.environ.get("STEAM_COOKIE"),
+                   help="Steam 登入 Cookie(steamLoginSecure=...)，限流門檻高很多")
+    p.add_argument("--steam-cooldown", type=int, default=300,
+                   help="Steam 持續被限流時的長冷卻秒數，0=關閉")
     p.add_argument("--limit", type=int, default=0,
                    help="只處理前 N 個 (皮膚×磨損) 用於測試，0=全部")
     p.add_argument("--self-test", action="store_true",
@@ -136,25 +143,39 @@ def main(argv=None):
     if args.limit:
         keys = keys[:args.limit]
 
-    # 2) 抓 Steam
+    cur = {1: "$ (美元)", 3: "€ (歐元)", 23: "¥ (人民幣)"}.get(
+        args.currency, str(args.currency))
+    sub_universe = {k: universe[k] for k in keys}
+
+    def save(steam_map):
+        rows = pipeline.merge_rows(sub_universe, steam_map, fetched_at)
+        write_workbook(rows, args.output, currency_label=cur)
+        return len(rows)
+
+    # 2) 抓 Steam（邊抓邊存）
     steam_by_mhn = {}
     if use_steam:
         from csprice.steam import SteamClient
-        steam = SteamClient(currency=args.currency, delay=args.steam_delay)
-        print(f"→ 抓 Steam（{len(keys)} 筆，間隔 {args.steam_delay}s，"
-              "數量多時很慢請耐心）…")
-        for i, mhn in enumerate(keys, 1):
-            steam_by_mhn[mhn] = steam.fetch(mhn)
-            if i % 10 == 0 or i == len(keys):
-                print(f"  Steam 進度 {i}/{len(keys)}")
+        steam = SteamClient(currency=args.currency, delay=args.steam_delay,
+                            cookie=args.steam_cookie, mode=args.steam_mode,
+                            cooldown=args.steam_cooldown)
+        note = "" if args.steam_cookie else "（未帶登入 Cookie，較易被限流）"
+        print(f"→ 抓 Steam（{len(keys)} 筆，mode={args.steam_mode}，"
+              f"間隔 {args.steam_delay}s{note}）…")
+        try:
+            for i, mhn in enumerate(keys, 1):
+                steam_by_mhn[mhn] = steam.fetch(mhn)
+                if i % 10 == 0 or i == len(keys):
+                    save(steam_by_mhn)
+                    print(f"  Steam 進度 {i}/{len(keys)}（已存檔 {args.output}）")
+        except KeyboardInterrupt:
+            n = save(steam_by_mhn)
+            print(f"\n⚠ 已中止，將已抓的 {n} 列存到 {args.output}")
+            return 0
 
     # 3) 合併 + 輸出
-    sub_universe = {k: universe[k] for k in keys}
-    rows = pipeline.merge_rows(sub_universe, steam_by_mhn, fetched_at)
-    cur = {1: "$ (美元)", 3: "€ (歐元)", 23: "¥ (人民幣)"}.get(
-        args.currency, str(args.currency))
-    write_workbook(rows, args.output, currency_label=cur)
-    print(f"✔ 完成：{len(rows)} 列 -> {args.output}（抓取時間 {fetched_at}）")
+    n = save(steam_by_mhn)
+    print(f"✔ 完成：{n} 列 -> {args.output}（抓取時間 {fetched_at}）")
     return 0
 
 

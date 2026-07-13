@@ -153,13 +153,16 @@ def _parse_int(v):
 
 class SteamClient:
     def __init__(self, currency=CURRENCY_CNY, country="CN", language="schinese",
-                 delay=3.0, timeout=20, max_retries=4, session=None):
+                 delay=3.0, timeout=20, max_retries=4, session=None,
+                 cookie=None, mode="full", cooldown=300):
         self.currency = currency
         self.country = country
         self.language = language
         self.delay = delay
         self.timeout = timeout
         self.max_retries = max_retries
+        self.mode = mode            # "full"=含最高求購, "lite"=只 priceoverview
+        self.cooldown = cooldown    # 持續 429 時的長冷卻秒數
         self.s = session or requests.Session()
         self.s.headers.update({
             "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -167,11 +170,15 @@ class SteamClient:
                            "Chrome/122.0 Safari/537.36"),
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         })
+        if cookie:
+            # 登入後的 Steam session（steamLoginSecure=...）限流門檻高很多
+            self.s.headers["Cookie"] = cookie
         self._nameid_cache = {}
 
-    def _get(self, url, params=None, referer=None):
+    def _get(self, url, params=None, referer=None, allow_cooldown=True):
         headers = {"Referer": referer} if referer else None
         backoff = self.delay
+        last_was_429 = False
         for attempt in range(1, self.max_retries + 1):
             try:
                 r = self.s.get(url, params=params, headers=headers,
@@ -181,14 +188,22 @@ class SteamClient:
                             self.max_retries, e)
                 time.sleep(backoff)
                 backoff *= 2
+                last_was_429 = False
                 continue
             if r.status_code == 429:
                 log.warning("Steam 429 限流，退避 %.1fs (%s/%s)", backoff * 2,
                             attempt, self.max_retries)
                 time.sleep(backoff * 2)
                 backoff *= 2
+                last_was_429 = True
                 continue
             return r
+        # 短退避都用完仍被限流 → 做一次長冷卻再重試一輪（Steam 通常需數分鐘解封）
+        if last_was_429 and allow_cooldown and self.cooldown > 0:
+            log.warning("Steam 持續限流，冷卻 %ss 後再試…（可 Ctrl+C 中止，"
+                        "已抓部分會存檔）", self.cooldown)
+            time.sleep(self.cooldown)
+            return self._get(url, params, referer, allow_cooldown=False)
         return None
 
     def get_item_nameid(self, mhn):
@@ -255,7 +270,9 @@ class SteamClient:
 
     def fetch(self, mhn):
         overview = self.price_overview(mhn)
-        hist = self.order_histogram(mhn)
+        # lite 模式只打 priceoverview（1 次/款），大幅降低被限流機率，
+        # 代價是沒有 Steam「最高求購價」。
+        hist = {} if self.mode == "lite" else self.order_histogram(mhn)
         lowest_sell = hist.get("lowest_sell_order")
         if lowest_sell is None:
             lowest_sell = overview.get("lowest_price")
@@ -554,7 +571,15 @@ def parse_args(argv=None):
     p.add_argument("--steam-only", action="store_true")
     p.add_argument("--buff-only", action="store_true")
     p.add_argument("--currency", type=int, default=23)
-    p.add_argument("--steam-delay", type=float, default=3.0)
+    p.add_argument("--steam-delay", type=float, default=3.0,
+                   help="Steam 每請求間隔秒數，被限流就調大（如 8~15）")
+    p.add_argument("--steam-mode", choices=["full", "lite"], default="full",
+                   help="full=含 Steam 最高求購(3請求/款,易被限流); "
+                        "lite=只抓最低賣價+交易量(1請求/款,較穩)")
+    p.add_argument("--steam-cookie", default=os.environ.get("STEAM_COOKIE"),
+                   help="Steam 登入 Cookie(steamLoginSecure=...)，限流門檻高很多")
+    p.add_argument("--steam-cooldown", type=int, default=300,
+                   help="Steam 持續被限流時的長冷卻秒數，0=關閉")
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--self-test", action="store_true")
     p.add_argument("-v", "--verbose", action="store_true")
@@ -640,22 +665,36 @@ def main(argv=None):
     if args.limit:
         keys = keys[:args.limit]
 
-    steam_by_mhn = {}
-    if use_steam:
-        steam = SteamClient(currency=args.currency, delay=args.steam_delay)
-        print(f"→ 抓 Steam（{len(keys)} 筆，間隔 {args.steam_delay}s，"
-              "數量多時很慢請耐心）…")
-        for i, mhn in enumerate(keys, 1):
-            steam_by_mhn[mhn] = steam.fetch(mhn)
-            if i % 10 == 0 or i == len(keys):
-                print(f"  Steam 進度 {i}/{len(keys)}")
-
-    sub_universe = {k: universe[k] for k in keys}
-    rows = merge_rows(sub_universe, steam_by_mhn, fetched_at)
     cur = {1: "$ (美元)", 3: "€ (歐元)", 23: "¥ (人民幣)"}.get(
         args.currency, str(args.currency))
-    write_workbook(rows, args.output, currency_label=cur)
-    print(f"✔ 完成：{len(rows)} 列 -> {args.output}（抓取時間 {fetched_at}）")
+    sub_universe = {k: universe[k] for k in keys}
+
+    def save(steam_map):
+        rows = merge_rows(sub_universe, steam_map, fetched_at)
+        write_workbook(rows, args.output, currency_label=cur)
+        return len(rows)
+
+    steam_by_mhn = {}
+    if use_steam:
+        steam = SteamClient(currency=args.currency, delay=args.steam_delay,
+                            cookie=args.steam_cookie, mode=args.steam_mode,
+                            cooldown=args.steam_cooldown)
+        note = "" if args.steam_cookie else "（未帶登入 Cookie，較易被限流）"
+        print(f"→ 抓 Steam（{len(keys)} 筆，mode={args.steam_mode}，"
+              f"間隔 {args.steam_delay}s{note}）…")
+        try:
+            for i, mhn in enumerate(keys, 1):
+                steam_by_mhn[mhn] = steam.fetch(mhn)
+                if i % 10 == 0 or i == len(keys):
+                    save(steam_by_mhn)   # 邊抓邊存，中途中斷也保住進度
+                    print(f"  Steam 進度 {i}/{len(keys)}（已存檔 {args.output}）")
+        except KeyboardInterrupt:
+            n = save(steam_by_mhn)
+            print(f"\n⚠ 已中止，將已抓的 {n} 列存到 {args.output}")
+            return 0
+
+    n = save(steam_by_mhn)
+    print(f"✔ 完成：{n} 列 -> {args.output}（抓取時間 {fetched_at}）")
     return 0
 
 

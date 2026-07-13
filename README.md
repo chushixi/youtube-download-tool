@@ -85,13 +85,25 @@ python ak_price_compare.py --self-test -o demo.xlsx
 | `--buff-cookie` | BUFF 登入 Cookie（或設 `BUFF_COOKIE`） |
 | `--steam-only` / `--buff-only` | 只抓其中一邊 |
 | `--currency` | Steam 幣別碼：`1`=USD、`3`=EUR、`23`=CNY（預設 23，與 BUFF 對齊） |
-| `--steam-delay` | Steam 每請求間隔秒數（預設 3.0，太小會被 429 限流） |
+| `--steam-delay` | Steam 每請求間隔秒數（預設 3.0；被限流就調大，如 8~15） |
+| `--steam-mode` | `full`=含 Steam 最高求購（3 請求/款，易被限流）；`lite`=只抓最低賣價+交易量（1 請求/款，較穩） |
+| `--steam-cookie` | Steam 登入 Cookie（`steamLoginSecure=...`），限流門檻高很多；或設 `STEAM_COOKIE` |
+| `--steam-cooldown` | 持續被限流時的長冷卻秒數（預設 300，`0`=關閉） |
 | `--limit N` | 只處理前 N 筆，測試用 |
 | `-v` | 顯示詳細進度 |
 
-> **Steam 很慢且會限流**：Steam 對每個 IP 約每分鐘 20 次請求就開始 429。
-> 每款皮膚每種磨損要 2~3 次請求，全部 AK-47（約 40 款 × 5 磨損 = 200 筆）
-> 在預設 3 秒間隔下可能要跑 20~40 分鐘。被限流時工具會自動退避重試。
+> **Steam 很慢且會限流（429）**：Steam 對「沒登入又短時間狂抓」防得很兇，
+> 每個 IP 約每分鐘 20 次請求就開始 429。全部 AK-47（約 200 筆）在 `full` 模式
+> 下每款要 3 次請求，很容易被擋。建議：
+>
+> - **想快、能接受沒有 Steam「最高求購」欄** → 加 `--steam-mode lite`（1 請求/款，最穩）。
+> - **要完整（含最高求購）** → 加 `--steam-cookie "steamLoginSecure=..."`（登入後限流門檻高很多）
+>   並把 `--steam-delay` 調大到 8~15。
+> - 被限流時工具會先短退避、再做一次長冷卻（`--steam-cooldown`）；**邊抓邊存**，
+>   中途 Ctrl+C 也會把已抓的存進 Excel，不會白跑。
+>
+> 取得 Steam Cookie：瀏覽器登入 steamcommunity.com → F12 → Application → Cookies →
+> 複製 `steamLoginSecure` 的值（填成 `steamLoginSecure=你的值`）。
 
 ## 輸出欄位
 
