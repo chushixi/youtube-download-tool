@@ -317,8 +317,17 @@ class BuffClient:
                            "Chrome/122.0 Safari/537.36"),
             "Referer": "https://buff.163.com/market/csgo",
             "Accept": "application/json, text/plain, */*",
+            "X-Requested-With": "XMLHttpRequest",
             "Cookie": cookie if "=" in cookie else f"session={cookie}",
         })
+
+    # BUFF 取 AK-47 清單的幾種參數寫法，會依序試出第一個回 OK 的來用。
+    # 不同時期 BUFF 對 category / sort_by 的接受度不一，search 最穩。
+    STRATEGIES = [
+        {"category": "weapon_ak47"},
+        {"search": "AK-47"},
+        {"search": "AK-47", "category": "weapon_ak47"},
+    ]
 
     def _get(self, url, params):
         backoff = self.delay
@@ -339,42 +348,62 @@ class BuffClient:
             return r
         return None
 
-    def _goods_page(self, page_num):
+    def _goods_page(self, page_num, extra):
         url = "https://buff.163.com/api/market/goods"
-        params = {"game": GAME, "page_num": page_num,
-                  "category": CATEGORY_AK47, "sort_by": "default"}
+        params = {"game": GAME, "page_num": page_num, "page_size": 80}
+        params.update(extra)
         r = self._get(url, params)
         time.sleep(self.delay)
         if r is None:
-            return None
+            return None, "no-response"
         try:
             data = r.json()
         except ValueError:
-            log.error("BUFF 回傳非 JSON（page %s），可能 Cookie 失效或被擋", page_num)
-            return None
+            snippet = (r.text or "")[:200].replace("\n", " ")
+            log.error("BUFF 回傳非 JSON（HTTP %s），可能 Cookie 失效或被擋。開頭：%s",
+                      r.status_code, snippet)
+            return None, "not-json"
         if data.get("code") != "OK":
-            log.error("BUFF 回應 code=%s msg=%s（page %s）",
-                      data.get("code"), data.get("msg"), page_num)
-            return None
-        return data.get("data", {})
+            log.error("BUFF code=%s msg=%s（page %s, params=%s）",
+                      data.get("code"), data.get("msg"), page_num, extra)
+            return None, data.get("code")
+        return data.get("data", {}), "OK"
+
+    def _pick_strategy(self):
+        """用第 1 頁探測，回傳第一個能成功的參數組；都失敗回 None。"""
+        for extra in self.STRATEGIES:
+            data, status = self._goods_page(1, extra)
+            if status == "OK" and data is not None:
+                log.info("BUFF 採用參數：%s", extra)
+                return extra, data
+            if status in ("not-json", "no-response"):
+                # Cookie/網路問題，換參數也沒用，直接停。
+                break
+        return None, None
 
     def discover_ak_goods(self, max_pages=50):
-        items = []
-        page = 1
-        total_page = None
+        extra, first = self._pick_strategy()
+        if extra is None:
+            log.error("BUFF 所有參數組都失敗——多半是 Cookie 失效或被風控，"
+                      "請重新登入 buff.163.com 取新的 session。")
+            return []
+        items = list(first.get("items", []))
+        total_page = first.get("total_page")
+        log.info("BUFF AK-47 第 1/%s 頁，本頁 %s 筆", total_page, len(items))
+        page = 2
         while page <= max_pages:
-            data = self._goods_page(page)
-            if not data:
+            if total_page is not None and page > total_page:
+                break
+            data, status = self._goods_page(page, extra)
+            if status != "OK" or data is None:
                 break
             page_items = data.get("items", [])
+            if not page_items:
+                break
             items.extend(page_items)
             total_page = data.get("total_page", total_page)
             log.info("BUFF AK-47 第 %s/%s 頁，本頁 %s 筆，累計 %s",
                      page, total_page, len(page_items), len(items))
-            if total_page is not None and page >= total_page:
-                break
-            if not page_items:
-                break
             page += 1
         return items
 
@@ -407,11 +436,13 @@ def build_universe_from_buff(buff_items):
     universe = {}
     for raw in buff_items:
         parsed = BuffClient.parse_item(raw)
+        mhn = parsed["market_hash_name"]
+        # 只保留純正 AK-47 皮膚（排除 StatTrak™ / 紀念品 / 其他雜項）
+        if not mhn or not mhn.startswith("AK-47 |"):
+            continue
         if parsed["wear_key"] not in WANTED_KEYS:
             continue
-        if not parsed["market_hash_name"]:
-            continue
-        universe[parsed["market_hash_name"]] = parsed
+        universe[mhn] = parsed
     return universe
 
 

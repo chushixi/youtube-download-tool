@@ -16,11 +16,13 @@ def build_universe_from_buff(buff_items):
     universe = {}
     for raw in buff_items:
         parsed = BuffClient.parse_item(raw)
+        mhn = parsed["market_hash_name"]
+        # 只保留純正 AK-47 皮膚（排除 StatTrak™ / 紀念品 / 其他雜項）
+        if not mhn or not mhn.startswith("AK-47 |"):
+            continue
         if parsed["wear_key"] not in wears.WANTED_KEYS:
             continue
-        if not parsed["market_hash_name"]:
-            continue
-        universe[parsed["market_hash_name"]] = parsed
+        universe[mhn] = parsed
     return universe
 
 
