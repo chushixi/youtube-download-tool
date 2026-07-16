@@ -268,6 +268,49 @@ class SteamClient:
             "lowest_sell_order": _parse_price(_cents(data.get("lowest_sell_order"))),
         }
 
+    def search_ak(self, max_pages=20, page_size=100):
+        """批次抓 AK-47 清單：一次回最多 100 款，只需數次請求，最抗限流。
+
+        回傳 dict[market_hash_name] -> {lowest_sell, listings}。
+        來源 /market/search/render 只有最低賣價與在售數量，
+        沒有最高求購與 24h 交易量。
+        """
+        url = "https://steamcommunity.com/market/search/render/"
+        out = {}
+        start = 0
+        while start < max_pages * page_size:
+            params = {
+                "norender": 1, "appid": APPID_CS2, "currency": self.currency,
+                "count": page_size, "start": start,
+                "category_730_Weapon[]": "tag_weapon_ak47",
+                "search_descriptions": 0,
+            }
+            r = self._get(url, params=params)
+            time.sleep(self.delay)
+            if r is None or r.status_code != 200:
+                log.warning("Steam search 失敗（start=%s）", start)
+                break
+            try:
+                data = r.json()
+            except ValueError:
+                break
+            results = data.get("results") or []
+            total = data.get("total_count") or 0
+            for it in results:
+                hn = it.get("hash_name")
+                if not hn:
+                    continue
+                out[hn] = {
+                    "lowest_sell": _cents(it.get("sell_price")),
+                    "listings": it.get("sell_listings"),
+                }
+            log.info("Steam search：start=%s 本頁 %s 款，累計 %s / 共 %s",
+                     start, len(results), len(out), total)
+            start += page_size
+            if not results or start >= total:
+                break
+        return out
+
     def fetch(self, mhn):
         overview = self.price_overview(mhn)
         # lite 模式只打 priceoverview（1 次/款），大幅降低被限流機率，
@@ -493,6 +536,7 @@ def merge_rows(universe, steam_by_mhn, fetched_at):
             "steam_lowest_sell": s_sell,
             "steam_highest_buy": steam.get("highest_buy"),
             "steam_volume": steam.get("volume"),
+            "steam_listings": steam.get("listings"),
             "buff_lowest_sell": b_sell,
             "buff_highest_buy": buff.get("highest_buy"),
             "buff_sell_num": buff.get("sell_num"),
@@ -515,6 +559,7 @@ COLUMNS = [
     ("Steam最低賣價", "steam_lowest_sell", 14, "#,##0.00"),
     ("Steam最高求購", "steam_highest_buy", 14, "#,##0.00"),
     ("Steam交易量(24h)", "steam_volume", 14, "#,##0"),
+    ("Steam在售量", "steam_listings", 12, "#,##0"),
     ("BUFF最低賣價", "buff_lowest_sell", 14, "#,##0.00"),
     ("BUFF最高求購", "buff_highest_buy", 14, "#,##0.00"),
     ("BUFF在售量", "buff_sell_num", 12, "#,##0"),
@@ -573,9 +618,11 @@ def parse_args(argv=None):
     p.add_argument("--currency", type=int, default=23)
     p.add_argument("--steam-delay", type=float, default=3.0,
                    help="Steam 每請求間隔秒數，被限流就調大（如 8~15）")
-    p.add_argument("--steam-mode", choices=["full", "lite"], default="full",
-                   help="full=含 Steam 最高求購(3請求/款,易被限流); "
-                        "lite=只抓最低賣價+交易量(1請求/款,較穩)")
+    p.add_argument("--steam-mode", choices=["search", "lite", "full"],
+                   default="search",
+                   help="search=批次抓最低賣價+在售量(數次請求,最抗限流,預設); "
+                        "lite=逐款最低賣價+24h量(1請求/款); "
+                        "full=逐款再加最高求購(3請求/款,最易被限流)")
     p.add_argument("--steam-cookie", default=os.environ.get("STEAM_COOKIE"),
                    help="Steam 登入 Cookie(steamLoginSecure=...)，限流門檻高很多")
     p.add_argument("--steam-cooldown", type=int, default=300,
@@ -679,19 +726,28 @@ def main(argv=None):
         steam = SteamClient(currency=args.currency, delay=args.steam_delay,
                             cookie=args.steam_cookie, mode=args.steam_mode,
                             cooldown=args.steam_cooldown)
-        note = "" if args.steam_cookie else "（未帶登入 Cookie，較易被限流）"
-        print(f"→ 抓 Steam（{len(keys)} 筆，mode={args.steam_mode}，"
-              f"間隔 {args.steam_delay}s{note}）…")
-        try:
-            for i, mhn in enumerate(keys, 1):
-                steam_by_mhn[mhn] = steam.fetch(mhn)
-                if i % 10 == 0 or i == len(keys):
-                    save(steam_by_mhn)   # 邊抓邊存，中途中斷也保住進度
-                    print(f"  Steam 進度 {i}/{len(keys)}（已存檔 {args.output}）")
-        except KeyboardInterrupt:
-            n = save(steam_by_mhn)
-            print(f"\n⚠ 已中止，將已抓的 {n} 列存到 {args.output}")
-            return 0
+        note = "" if args.steam_cookie else "（未帶登入 Cookie）"
+        print(f"→ 抓 Steam（mode={args.steam_mode}，間隔 {args.steam_delay}s{note}）…")
+        if args.steam_mode == "search":
+            # 批次端點：數次請求抓完全部，最抗限流。只有最低賣價+在售量。
+            found = steam.search_ak()
+            steam_by_mhn = {mhn: {"lowest_sell": v.get("lowest_sell"),
+                                  "highest_buy": None, "volume": None,
+                                  "listings": v.get("listings")}
+                            for mhn, v in found.items()}
+            hit = sum(1 for k in keys if k in steam_by_mhn)
+            print(f"  Steam search 完成：對到 {hit}/{len(keys)} 款")
+        else:
+            try:
+                for i, mhn in enumerate(keys, 1):
+                    steam_by_mhn[mhn] = steam.fetch(mhn)
+                    if i % 10 == 0 or i == len(keys):
+                        save(steam_by_mhn)   # 邊抓邊存，中途中斷也保住進度
+                        print(f"  Steam 進度 {i}/{len(keys)}（已存檔 {args.output}）")
+            except KeyboardInterrupt:
+                n = save(steam_by_mhn)
+                print(f"\n⚠ 已中止，將已抓的 {n} 列存到 {args.output}")
+                return 0
 
     n = save(steam_by_mhn)
     print(f"✔ 完成：{n} 列 -> {args.output}（抓取時間 {fetched_at}）")

@@ -14,6 +14,7 @@ COLUMNS = [
     ("Steam最低賣價",  "steam_lowest_sell", 14, "#,##0.00"),
     ("Steam最高求購",  "steam_highest_buy", 14, "#,##0.00"),
     ("Steam交易量(24h)", "steam_volume",    14, "#,##0"),
+    ("Steam在售量",    "steam_listings",    12, "#,##0"),
     ("BUFF最低賣價",   "buff_lowest_sell",  14, "#,##0.00"),
     ("BUFF最高求購",   "buff_highest_buy",  14, "#,##0.00"),
     ("BUFF在售量",     "buff_sell_num",     12, "#,##0"),

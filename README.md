@@ -86,21 +86,23 @@ python ak_price_compare.py --self-test -o demo.xlsx
 | `--steam-only` / `--buff-only` | 只抓其中一邊 |
 | `--currency` | Steam 幣別碼：`1`=USD、`3`=EUR、`23`=CNY（預設 23，與 BUFF 對齊） |
 | `--steam-delay` | Steam 每請求間隔秒數（預設 3.0；被限流就調大，如 8~15） |
-| `--steam-mode` | `full`=含 Steam 最高求購（3 請求/款，易被限流）；`lite`=只抓最低賣價+交易量（1 請求/款，較穩） |
+| `--steam-mode` | `search`=批次端點抓最低賣價+在售量（數次請求，最抗限流，**預設**）；`lite`=逐款最低賣價+24h 量（1 請求/款）；`full`=逐款再加最高求購（3 請求/款，最易被限流） |
 | `--steam-cookie` | Steam 登入 Cookie（`steamLoginSecure=...`），限流門檻高很多；或設 `STEAM_COOKIE` |
 | `--steam-cooldown` | 持續被限流時的長冷卻秒數（預設 300，`0`=關閉） |
 | `--limit N` | 只處理前 N 筆，測試用 |
 | `-v` | 顯示詳細進度 |
 
-> **Steam 很慢且會限流（429）**：Steam 對「沒登入又短時間狂抓」防得很兇，
-> 每個 IP 約每分鐘 20 次請求就開始 429。全部 AK-47（約 200 筆）在 `full` 模式
-> 下每款要 3 次請求，很容易被擋。建議：
+> **Steam 很慢且會限流（429）**：Steam 對「沒登入又短時間逐款狂抓」防得很兇，
+> 每個 IP 約每分鐘 20 次請求就開始 429。建議依需求選模式：
 >
-> - **想快、能接受沒有 Steam「最高求購」欄** → 加 `--steam-mode lite`（1 請求/款，最穩）。
-> - **要完整（含最高求購）** → 加 `--steam-cookie "steamLoginSecure=..."`（登入後限流門檻高很多）
->   並把 `--steam-delay` 調大到 8~15。
-> - 被限流時工具會先短退避、再做一次長冷卻（`--steam-cooldown`）；**邊抓邊存**，
->   中途 Ctrl+C 也會把已抓的存進 Excel，不會白跑。
+> - **預設 `search`（推薦）**：改用批次搜尋端點 `/market/search/render`，一次回 100 款，
+>   全部 AK-47 只要數次請求，幾乎不會被限流。給**最低賣價 + 在售量**，
+>   但**沒有**最高求購與 24h 交易量。
+> - **`lite`**：逐款打 `priceoverview`（1 請求/款），給最低賣價 + 24h 交易量，無最高求購。
+> - **`full`**：逐款再抓 `itemordershistogram`（3 請求/款），多給**最高求購**，最易被限流；
+>   建議搭配 `--steam-cookie "steamLoginSecure=..."`（登入額度高很多）與較大的 `--steam-delay`。
+> - 逐款模式（lite/full）被限流時會先短退避、再做一次長冷卻（`--steam-cooldown`），
+>   且**邊抓邊存**，中途 Ctrl+C 也會把已抓的存進 Excel，不會白跑。
 >
 > 取得 Steam Cookie：瀏覽器登入 steamcommunity.com → F12 → Application → Cookies →
 > 複製 `steamLoginSecure` 的值（填成 `steamLoginSecure=你的值`）。
@@ -112,7 +114,8 @@ python ak_price_compare.py --self-test -o demo.xlsx
 | 皮膚 / 磨損 / market_hash_name | 識別 |
 | Steam最低賣價 | itemordershistogram（退回 priceoverview） |
 | Steam最高求購 | itemordershistogram |
-| Steam交易量(24h) | priceoverview volume |
+| Steam交易量(24h) | priceoverview volume（僅 lite/full 模式） |
+| Steam在售量 | search/render sell_listings（僅 search 模式） |
 | BUFF最低賣價 | goods `sell_min_price` |
 | BUFF最高求購 | goods `buy_max_price` |
 | BUFF在售量 | goods `sell_num`（BUFF 未提供公開「成交量」，以在售量近似） |

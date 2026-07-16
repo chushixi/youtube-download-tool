@@ -45,9 +45,11 @@ def parse_args(argv=None):
                    help="Steam 貨幣代碼（1=USD, 3=EUR, 23=CNY）預設 23")
     p.add_argument("--steam-delay", type=float, default=3.0,
                    help="Steam 每請求間隔秒數，被限流就調大（如 8~15）")
-    p.add_argument("--steam-mode", choices=["full", "lite"], default="full",
-                   help="full=含 Steam 最高求購(3請求/款,易被限流); "
-                        "lite=只抓最低賣價+交易量(1請求/款,較穩)")
+    p.add_argument("--steam-mode", choices=["search", "lite", "full"],
+                   default="search",
+                   help="search=批次抓最低賣價+在售量(數次請求,最抗限流,預設); "
+                        "lite=逐款最低賣價+24h量(1請求/款); "
+                        "full=逐款再加最高求購(3請求/款,最易被限流)")
     p.add_argument("--steam-cookie", default=os.environ.get("STEAM_COOKIE"),
                    help="Steam 登入 Cookie(steamLoginSecure=...)，限流門檻高很多")
     p.add_argument("--steam-cooldown", type=int, default=300,
@@ -159,19 +161,27 @@ def main(argv=None):
         steam = SteamClient(currency=args.currency, delay=args.steam_delay,
                             cookie=args.steam_cookie, mode=args.steam_mode,
                             cooldown=args.steam_cooldown)
-        note = "" if args.steam_cookie else "（未帶登入 Cookie，較易被限流）"
-        print(f"→ 抓 Steam（{len(keys)} 筆，mode={args.steam_mode}，"
-              f"間隔 {args.steam_delay}s{note}）…")
-        try:
-            for i, mhn in enumerate(keys, 1):
-                steam_by_mhn[mhn] = steam.fetch(mhn)
-                if i % 10 == 0 or i == len(keys):
-                    save(steam_by_mhn)
-                    print(f"  Steam 進度 {i}/{len(keys)}（已存檔 {args.output}）")
-        except KeyboardInterrupt:
-            n = save(steam_by_mhn)
-            print(f"\n⚠ 已中止，將已抓的 {n} 列存到 {args.output}")
-            return 0
+        note = "" if args.steam_cookie else "（未帶登入 Cookie）"
+        print(f"→ 抓 Steam（mode={args.steam_mode}，間隔 {args.steam_delay}s{note}）…")
+        if args.steam_mode == "search":
+            found = steam.search_ak()
+            steam_by_mhn = {mhn: {"lowest_sell": v.get("lowest_sell"),
+                                  "highest_buy": None, "volume": None,
+                                  "listings": v.get("listings")}
+                            for mhn, v in found.items()}
+            hit = sum(1 for k in keys if k in steam_by_mhn)
+            print(f"  Steam search 完成：對到 {hit}/{len(keys)} 款")
+        else:
+            try:
+                for i, mhn in enumerate(keys, 1):
+                    steam_by_mhn[mhn] = steam.fetch(mhn)
+                    if i % 10 == 0 or i == len(keys):
+                        save(steam_by_mhn)
+                        print(f"  Steam 進度 {i}/{len(keys)}（已存檔 {args.output}）")
+            except KeyboardInterrupt:
+                n = save(steam_by_mhn)
+                print(f"\n⚠ 已中止，將已抓的 {n} 列存到 {args.output}")
+                return 0
 
     # 3) 合併 + 輸出
     n = save(steam_by_mhn)

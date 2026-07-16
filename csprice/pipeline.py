@@ -62,6 +62,7 @@ def merge_rows(universe, steam_by_mhn, fetched_at):
             "steam_lowest_sell": s_sell,
             "steam_highest_buy": steam.get("highest_buy"),
             "steam_volume": steam.get("volume"),
+            "steam_listings": steam.get("listings"),
             "buff_lowest_sell": b_sell,
             "buff_highest_buy": buff.get("highest_buy"),
             "buff_sell_num": buff.get("sell_num"),

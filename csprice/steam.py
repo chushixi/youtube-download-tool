@@ -177,6 +177,47 @@ class SteamClient:
                 _cents(data.get("lowest_sell_order"))),
         }
 
+    # -- 批次搜尋：一次抓多款（最抗限流）------------------------------------
+    def search_ak(self, max_pages=20, page_size=100):
+        """批次抓 AK-47 清單：/market/search/render 一次回最多 100 款，
+        只需數次請求。回傳 dict[market_hash_name] -> {lowest_sell, listings}。
+        來源僅有最低賣價與在售數量，無最高求購與 24h 交易量。"""
+        url = "https://steamcommunity.com/market/search/render/"
+        out = {}
+        start = 0
+        while start < max_pages * page_size:
+            params = {
+                "norender": 1, "appid": APPID_CS2, "currency": self.currency,
+                "count": page_size, "start": start,
+                "category_730_Weapon[]": "tag_weapon_ak47",
+                "search_descriptions": 0,
+            }
+            r = self._get(url, params=params)
+            time.sleep(self.delay)
+            if r is None or r.status_code != 200:
+                log.warning("Steam search 失敗（start=%s）", start)
+                break
+            try:
+                data = r.json()
+            except ValueError:
+                break
+            results = data.get("results") or []
+            total = data.get("total_count") or 0
+            for it in results:
+                hn = it.get("hash_name")
+                if not hn:
+                    continue
+                out[hn] = {
+                    "lowest_sell": _cents(it.get("sell_price")),
+                    "listings": it.get("sell_listings"),
+                }
+            log.info("Steam search：start=%s 本頁 %s 款，累計 %s / 共 %s",
+                     start, len(results), len(out), total)
+            start += page_size
+            if not results or start >= total:
+                break
+        return out
+
     # -- 對外：整合單一 market_hash_name 的所有欄位 --------------------------
     def fetch(self, market_hash_name):
         """回傳 dict：lowest_sell / highest_buy / volume（缺值為 None）。"""
