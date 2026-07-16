@@ -84,7 +84,8 @@ python ak_price_compare.py --self-test -o demo.xlsx
 | `-o, --output` | 輸出 Excel 路徑（預設 `ak_price_compare.xlsx`） |
 | `--buff-cookie` | BUFF 登入 Cookie（或設 `BUFF_COOKIE`） |
 | `--steam-only` / `--buff-only` | 只抓其中一邊 |
-| `--currency` | Steam 幣別碼：`1`=USD、`3`=EUR、`23`=CNY（預設 23，與 BUFF 對齊） |
+| `--currency` | Steam 幣別碼：`30`=TWD（新台幣，**預設**）、`23`=CNY、`1`=USD、`3`=EUR |
+| `--twd-rate` | BUFF 人民幣換算表格幣別的匯率（預設 `4.77`，即 1 RMB=4.77 TWD；設 `1` 則不換算） |
 | `--steam-delay` | Steam 每請求間隔秒數（預設 3.0；被限流就調大，如 8~15） |
 | `--steam-mode` | `search`=批次端點抓最低賣價+在售量（數次請求，最抗限流，**預設**）；`lite`=逐款最低賣價+24h 量（1 請求/款）；`full`=逐款再加最高求購（3 請求/款，最易被限流） |
 | `--steam-cookie` | Steam 登入 Cookie（`steamLoginSecure=...`），限流門檻高很多；或設 `STEAM_COOKIE` |

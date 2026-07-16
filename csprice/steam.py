@@ -63,7 +63,9 @@ class SteamClient:
             "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                            "AppleWebKit/537.36 (KHTML, like Gecko) "
                            "Chrome/122.0 Safari/537.36"),
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
+            "Referer": "https://steamcommunity.com/market/",
+            "X-Requested-With": "XMLHttpRequest",
         })
         if cookie:
             # 登入後的 Steam session（steamLoginSecure=...）限流門檻高很多
@@ -213,7 +215,8 @@ class SteamClient:
                 }
             log.info("Steam search：start=%s 本頁 %s 款，累計 %s / 共 %s",
                      start, len(results), len(out), total)
-            start += page_size
+            # 依實際回傳筆數前進（Steam 常只回 10/頁，不可用 page_size 硬跳）
+            start += len(results)
             if not results or start >= total:
                 break
         return out

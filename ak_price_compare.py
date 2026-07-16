@@ -41,8 +41,10 @@ def parse_args(argv=None):
                    help="不抓 BUFF，皮膚用內建後備清單")
     p.add_argument("--buff-only", action="store_true",
                    help="只抓 BUFF，不連 Steam")
-    p.add_argument("--currency", type=int, default=23,
-                   help="Steam 貨幣代碼（1=USD, 3=EUR, 23=CNY）預設 23")
+    p.add_argument("--currency", type=int, default=30,
+                   help="Steam 貨幣代碼：23=CNY、30=TWD(新台幣,預設)、1=USD、3=EUR")
+    p.add_argument("--twd-rate", type=float, default=4.77,
+                   help="BUFF 人民幣換算表格幣別的匯率（預設 4.77，即 1 RMB=4.77 TWD）")
     p.add_argument("--steam-delay", type=float, default=3.0,
                    help="Steam 每請求間隔秒數，被限流就調大（如 8~15）")
     p.add_argument("--steam-mode", choices=["search", "lite", "full"],
@@ -145,12 +147,15 @@ def main(argv=None):
     if args.limit:
         keys = keys[:args.limit]
 
-    cur = {1: "$ (美元)", 3: "€ (歐元)", 23: "¥ (人民幣)"}.get(
-        args.currency, str(args.currency))
+    cur = {1: "$ (美元)", 3: "€ (歐元)", 23: "¥ (人民幣)",
+           30: "NT$ (新台幣)"}.get(args.currency, str(args.currency))
+    if args.twd_rate != 1.0:
+        cur += f"（BUFF 以 1 RMB={args.twd_rate} 換算）"
     sub_universe = {k: universe[k] for k in keys}
 
     def save(steam_map):
-        rows = pipeline.merge_rows(sub_universe, steam_map, fetched_at)
+        rows = pipeline.merge_rows(sub_universe, steam_map, fetched_at,
+                                   buff_rate=args.twd_rate)
         write_workbook(rows, args.output, currency_label=cur)
         return len(rows)
 

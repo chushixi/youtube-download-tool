@@ -168,7 +168,9 @@ class SteamClient:
             "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                            "AppleWebKit/537.36 (KHTML, like Gecko) "
                            "Chrome/122.0 Safari/537.36"),
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
+            "Referer": "https://steamcommunity.com/market/",
+            "X-Requested-With": "XMLHttpRequest",
         })
         if cookie:
             # 登入後的 Steam session（steamLoginSecure=...）限流門檻高很多
@@ -306,7 +308,8 @@ class SteamClient:
                 }
             log.info("Steam search：start=%s 本頁 %s 款，累計 %s / 共 %s",
                      start, len(results), len(out), total)
-            start += page_size
+            # 依實際回傳筆數前進（Steam 常只回 10/頁，不可用 page_size 硬跳）
+            start += len(results)
             if not results or start >= total:
                 break
         return out
@@ -518,12 +521,17 @@ def build_universe_from_fallback():
     return universe
 
 
-def merge_rows(universe, steam_by_mhn, fetched_at):
+def merge_rows(universe, steam_by_mhn, fetched_at, buff_rate=1.0):
+    """buff_rate：BUFF 價格(人民幣)換算成表格幣別的匯率乘數。"""
+    def conv(v):
+        return round(v * buff_rate, 2) if v is not None else None
+
     rows = []
     for mhn, buff in universe.items():
         steam = steam_by_mhn.get(mhn, {})
         s_sell = steam.get("lowest_sell")
-        b_sell = buff.get("lowest_sell")
+        b_sell = conv(buff.get("lowest_sell"))     # 已換算成表格幣別
+        b_buy = conv(buff.get("highest_buy"))
         sell_diff = (s_sell - b_sell) if (s_sell is not None
                                           and b_sell is not None) else None
         sell_ratio = (s_sell / b_sell) if (s_sell is not None
@@ -538,7 +546,7 @@ def merge_rows(universe, steam_by_mhn, fetched_at):
             "steam_volume": steam.get("volume"),
             "steam_listings": steam.get("listings"),
             "buff_lowest_sell": b_sell,
-            "buff_highest_buy": buff.get("highest_buy"),
+            "buff_highest_buy": b_buy,
             "buff_sell_num": buff.get("sell_num"),
             "sell_diff": round(sell_diff, 2) if sell_diff is not None else None,
             "sell_ratio": round(sell_ratio, 4) if sell_ratio is not None else None,
@@ -615,7 +623,10 @@ def parse_args(argv=None):
     p.add_argument("--buff-cookie", default=os.environ.get("BUFF_COOKIE"))
     p.add_argument("--steam-only", action="store_true")
     p.add_argument("--buff-only", action="store_true")
-    p.add_argument("--currency", type=int, default=23)
+    p.add_argument("--currency", type=int, default=30,
+                   help="Steam 幣別碼：23=CNY、30=TWD(新台幣,預設)、1=USD、3=EUR")
+    p.add_argument("--twd-rate", type=float, default=4.77,
+                   help="BUFF 人民幣換算表格幣別的匯率（預設 4.77，即 1 RMB=4.77 TWD）")
     p.add_argument("--steam-delay", type=float, default=3.0,
                    help="Steam 每請求間隔秒數，被限流就調大（如 8~15）")
     p.add_argument("--steam-mode", choices=["search", "lite", "full"],
@@ -712,12 +723,15 @@ def main(argv=None):
     if args.limit:
         keys = keys[:args.limit]
 
-    cur = {1: "$ (美元)", 3: "€ (歐元)", 23: "¥ (人民幣)"}.get(
-        args.currency, str(args.currency))
+    cur = {1: "$ (美元)", 3: "€ (歐元)", 23: "¥ (人民幣)",
+           30: "NT$ (新台幣)"}.get(args.currency, str(args.currency))
+    if args.twd_rate != 1.0:
+        cur += f"（BUFF 以 1 RMB={args.twd_rate} 換算）"
     sub_universe = {k: universe[k] for k in keys}
 
     def save(steam_map):
-        rows = merge_rows(sub_universe, steam_map, fetched_at)
+        rows = merge_rows(sub_universe, steam_map, fetched_at,
+                          buff_rate=args.twd_rate)
         write_workbook(rows, args.output, currency_label=cur)
         return len(rows)
 
