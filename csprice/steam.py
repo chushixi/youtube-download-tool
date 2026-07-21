@@ -212,6 +212,7 @@ class SteamClient:
                 out[hn] = {
                     "lowest_sell": _cents(it.get("sell_price")),
                     "listings": it.get("sell_listings"),
+                    "ccy": detect_ccy(it.get("sell_price_text")),
                 }
             log.info("Steam search：start=%s 本頁 %s 款，累計 %s / 共 %s",
                      start, len(results), len(out), total)
@@ -259,3 +260,23 @@ def _parse_int(v):
         return int(m.group(0).replace(",", ""))
     except ValueError:
         return None
+
+
+def detect_ccy(text):
+    """由價格文字（如 '¥ 30.5' / 'NT$ 150' / '$1.23'）判斷幣別，回代碼字串。"""
+    if not text:
+        return None
+    t = str(text).replace(" ", "")
+    if "NT$" in t:
+        return "TWD"
+    if "HK$" in t:
+        return "HKD"
+    if "US$" in t:
+        return "USD"
+    if "CN¥" in t or "RMB" in t or "¥" in t or "￥" in t or "元" in t:
+        return "RMB"      # Steam 中國區以 ¥ 表示人民幣
+    if "€" in t:
+        return "EUR"
+    if "$" in t:
+        return "USD"
+    return None

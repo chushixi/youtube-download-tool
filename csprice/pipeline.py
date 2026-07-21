@@ -43,18 +43,22 @@ def build_universe_from_fallback():
     return universe
 
 
-def merge_rows(universe, steam_by_mhn, fetched_at, buff_rate=1.0):
+def merge_rows(universe, steam_by_mhn, fetched_at, buff_rate=1.0, steam_rate=1.0):
     """把 BUFF(universe 內含) 與 Steam 資料合併成 Excel 列，依皮膚→磨損排序。
-    buff_rate：BUFF 價格(人民幣)換算成表格幣別的匯率乘數。"""
-    def conv(v):
+    buff_rate / steam_rate：BUFF / Steam 原始價換算成表格幣別的匯率乘數。"""
+    def conv_b(v):
         return round(v * buff_rate, 2) if v is not None else None
+
+    def conv_s(v):
+        return round(v * steam_rate, 2) if v is not None else None
 
     rows = []
     for mhn, buff in universe.items():
         steam = steam_by_mhn.get(mhn, {})
-        s_sell = steam.get("lowest_sell")
-        b_sell = conv(buff.get("lowest_sell"))
-        b_buy = conv(buff.get("highest_buy"))
+        s_sell = conv_s(steam.get("lowest_sell"))
+        s_buy = conv_s(steam.get("highest_buy"))
+        b_sell = conv_b(buff.get("lowest_sell"))
+        b_buy = conv_b(buff.get("highest_buy"))
         sell_diff = (s_sell - b_sell) if (s_sell is not None
                                           and b_sell is not None) else None
         sell_ratio = (s_sell / b_sell) if (s_sell is not None
@@ -65,7 +69,7 @@ def merge_rows(universe, steam_by_mhn, fetched_at, buff_rate=1.0):
             "wear_zh": wear_zh(buff.get("wear_key")),
             "market_hash_name": mhn,
             "steam_lowest_sell": s_sell,
-            "steam_highest_buy": steam.get("highest_buy"),
+            "steam_highest_buy": s_buy,
             "steam_volume": steam.get("volume"),
             "steam_listings": steam.get("listings"),
             "buff_lowest_sell": b_sell,

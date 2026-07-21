@@ -151,6 +151,26 @@ def _parse_int(v):
         return None
 
 
+def detect_ccy(text):
+    """由價格文字（如 '¥ 30.5' / 'NT$ 150' / '$1.23'）判斷幣別，回代碼字串。"""
+    if not text:
+        return None
+    t = str(text).replace(" ", "")
+    if "NT$" in t:
+        return "TWD"
+    if "HK$" in t:
+        return "HKD"
+    if "US$" in t:
+        return "USD"
+    if "CN¥" in t or "RMB" in t or "¥" in t or "￥" in t or "元" in t:
+        return "RMB"      # 注意：Steam 中國區以 ¥ 表示人民幣
+    if "€" in t:
+        return "EUR"
+    if "$" in t:
+        return "USD"
+    return None
+
+
 class SteamClient:
     def __init__(self, currency=CURRENCY_CNY, country="CN", language="schinese",
                  delay=3.0, timeout=20, max_retries=4, session=None,
@@ -305,6 +325,7 @@ class SteamClient:
                 out[hn] = {
                     "lowest_sell": _cents(it.get("sell_price")),
                     "listings": it.get("sell_listings"),
+                    "ccy": detect_ccy(it.get("sell_price_text")),
                 }
             log.info("Steam search：start=%s 本頁 %s 款，累計 %s / 共 %s",
                      start, len(results), len(out), total)
@@ -521,17 +542,21 @@ def build_universe_from_fallback():
     return universe
 
 
-def merge_rows(universe, steam_by_mhn, fetched_at, buff_rate=1.0):
-    """buff_rate：BUFF 價格(人民幣)換算成表格幣別的匯率乘數。"""
-    def conv(v):
+def merge_rows(universe, steam_by_mhn, fetched_at, buff_rate=1.0, steam_rate=1.0):
+    """buff_rate / steam_rate：BUFF / Steam 原始價格換算成表格幣別的匯率乘數。"""
+    def conv_b(v):
         return round(v * buff_rate, 2) if v is not None else None
+
+    def conv_s(v):
+        return round(v * steam_rate, 2) if v is not None else None
 
     rows = []
     for mhn, buff in universe.items():
         steam = steam_by_mhn.get(mhn, {})
-        s_sell = steam.get("lowest_sell")
-        b_sell = conv(buff.get("lowest_sell"))     # 已換算成表格幣別
-        b_buy = conv(buff.get("highest_buy"))
+        s_sell = conv_s(steam.get("lowest_sell"))
+        s_buy = conv_s(steam.get("highest_buy"))
+        b_sell = conv_b(buff.get("lowest_sell"))     # 已換算成表格幣別
+        b_buy = conv_b(buff.get("highest_buy"))
         sell_diff = (s_sell - b_sell) if (s_sell is not None
                                           and b_sell is not None) else None
         sell_ratio = (s_sell / b_sell) if (s_sell is not None
@@ -542,7 +567,7 @@ def merge_rows(universe, steam_by_mhn, fetched_at, buff_rate=1.0):
             "wear_zh": wear_zh(buff.get("wear_key")),
             "market_hash_name": mhn,
             "steam_lowest_sell": s_sell,
-            "steam_highest_buy": steam.get("highest_buy"),
+            "steam_highest_buy": s_buy,
             "steam_volume": steam.get("volume"),
             "steam_listings": steam.get("listings"),
             "buff_lowest_sell": b_sell,
@@ -627,6 +652,9 @@ def parse_args(argv=None):
                    help="Steam 幣別碼：23=CNY、30=TWD(新台幣,預設)、1=USD、3=EUR")
     p.add_argument("--twd-rate", type=float, default=4.77,
                    help="BUFF 人民幣換算表格幣別的匯率（預設 4.77，即 1 RMB=4.77 TWD）")
+    p.add_argument("--steam-rate", type=float, default=None,
+                   help="Steam 原始價換算表格幣別的匯率乘數。留空=自動偵測"
+                        "（登入中國區帳號常回人民幣，會自動 ×twd-rate）")
     p.add_argument("--steam-delay", type=float, default=3.0,
                    help="Steam 每請求間隔秒數，被限流就調大（如 8~15）")
     p.add_argument("--steam-mode", choices=["search", "lite", "full"],
@@ -728,12 +756,26 @@ def main(argv=None):
     if args.twd_rate != 1.0:
         cur += f"（BUFF 以 1 RMB={args.twd_rate} 換算）"
     sub_universe = {k: universe[k] for k in keys}
+    steam_rate = {"v": args.steam_rate if args.steam_rate is not None else 1.0}
 
     def save(steam_map):
         rows = merge_rows(sub_universe, steam_map, fetched_at,
-                          buff_rate=args.twd_rate)
+                          buff_rate=args.twd_rate, steam_rate=steam_rate["v"])
         write_workbook(rows, args.output, currency_label=cur)
         return len(rows)
+
+    def resolve_steam_rate(detected_ccy):
+        """依偵測到的 Steam 幣別決定換算乘數（--steam-rate 優先）。"""
+        if args.steam_rate is not None:
+            return args.steam_rate
+        if detected_ccy == "RMB":
+            print(f"  偵測到 Steam 以人民幣回價 → 自動 ×{args.twd_rate} 換成台幣")
+            return args.twd_rate
+        if detected_ccy in ("TWD", None):
+            return 1.0
+        print(f"  ⚠ Steam 回價幣別為 {detected_ccy}，未自動換算；"
+              f"如需換算請加 --steam-rate")
+        return 1.0
 
     steam_by_mhn = {}
     if use_steam:
@@ -745,6 +787,9 @@ def main(argv=None):
         if args.steam_mode == "search":
             # 批次端點：數次請求抓完全部，最抗限流。只有最低賣價+在售量。
             found = steam.search_ak()
+            syms = [v.get("ccy") for v in found.values() if v.get("ccy")]
+            detected = max(set(syms), key=syms.count) if syms else None
+            steam_rate["v"] = resolve_steam_rate(detected)
             steam_by_mhn = {mhn: {"lowest_sell": v.get("lowest_sell"),
                                   "highest_buy": None, "volume": None,
                                   "listings": v.get("listings")}
@@ -752,6 +797,9 @@ def main(argv=None):
             hit = sum(1 for k in keys if k in steam_by_mhn)
             print(f"  Steam search 完成：對到 {hit}/{len(keys)} 款")
         else:
+            if args.steam_rate is None and args.steam_cookie:
+                print("  提醒：逐款模式無法自動偵測 Steam 幣別；若你的帳號為中國區"
+                      "（回人民幣），請加 --steam-rate 4.77")
             try:
                 for i, mhn in enumerate(keys, 1):
                     steam_by_mhn[mhn] = steam.fetch(mhn)
